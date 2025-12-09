@@ -504,11 +504,11 @@ export const PipelineProvider: React.FC<{ children: React.ReactNode }> = ({
   }, [unsavedChanges]);
 
   useEffect(() => {
-    if (
-      isMounted &&
-      state.apiKeys.length === 0 &&
-      window.location.href.includes("docetl.org")
-    ) {
+    const hosted =
+      process.env.NEXT_PUBLIC_HOSTED_DOCWRANGLER === "true" ||
+      window.location.href.includes("docetl.org");
+
+    if (isMounted && hosted && state.apiKeys.length === 0) {
       toast({
         title: "No API Keys Found",
         description:

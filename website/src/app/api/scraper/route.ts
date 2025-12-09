@@ -1,4 +1,5 @@
 import { createAzure } from "@ai-sdk/azure";
+import { createOpenAI } from "@ai-sdk/openai";
 import { streamText, tool, CoreMessage } from "ai";
 import { z } from "zod";
 import { createClient } from "@supabase/supabase-js";
@@ -761,17 +762,41 @@ ALWAYS include url and scraped_text fields (the raw article content).`
     : `Keep it simple: url, scraped_text (raw article content), and optionally 1-2 metadata fields like author or date.`
 }`;
 
-    // Use Azure OpenAI - apiVersion defaults to 'v1'
-    const azure = createAzure({
-      apiKey: process.env.AZURE_API_KEY!,
-      resourceName: process.env.AZURE_RESOURCE_NAME,
-    });
+    const useAzure =
+      !!process.env.AZURE_API_KEY && !!process.env.AZURE_RESOURCE_NAME;
+    const useOpenAI = !!process.env.OPENAI_API_KEY;
 
-    // Use GPT-5 as default model
-    const modelName = process.env.SCRAPER_AZURE_DEPLOYMENT_NAME || "gpt-4.1";
+    if (!useAzure && !useOpenAI) {
+      throw new Error(
+        "No LLM credentials found. Set OPENAI_API_KEY or AZURE_API_KEY/AZURE_RESOURCE_NAME."
+      );
+    }
+
+    const modelProvider = (() => {
+      if (useAzure) {
+        const azure = createAzure({
+          apiKey: process.env.AZURE_API_KEY!,
+          resourceName: process.env.AZURE_RESOURCE_NAME!,
+          apiVersion: process.env.AZURE_OPENAI_API_VERSION,
+        });
+        return (model: string) => azure(model);
+      }
+
+      const openai = createOpenAI({
+        apiKey: process.env.OPENAI_API_KEY!,
+        baseURL: process.env.OPENAI_API_BASE || process.env.OPENAI_API_URL,
+      });
+      return (model: string) => openai(model);
+    })();
+
+    const modelName = useAzure
+      ? process.env.SCRAPER_AZURE_DEPLOYMENT_NAME || "gpt-4.1"
+      : process.env.SCRAPER_OPENAI_MODEL ||
+        process.env.MODEL_NAME ||
+        "gpt-4o-mini";
 
     const result = await streamText({
-      model: azure(modelName),
+      model: modelProvider(modelName),
       system: systemPrompt,
       messages: cleanedMessages.filter((m) => m.role !== "system") as CoreMessage[], // Cast to AI SDK message type
       tools: {
