@@ -1,16 +1,36 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 import os
-import yaml
 import shutil
-import httpx
 import json
-import csv
-from io import StringIO
 from pathlib import Path
+
 from server.app.models import PipelineConfigRequest
+from server.app.providers import (
+    DatasetLoadResult,
+    DatasetProvider,
+    LocalDatasetProvider,
+    RTDatasetProvider,
+    LocalPipelineSink,
+    PipelineSink,
+    RTPipelineSink,
+)
 
 router = APIRouter()
+
+
+def _dataset_provider() -> DatasetProvider:
+    provider = os.getenv("DATA_PROVIDER", "local").lower()
+    if provider == "rt":
+        return RTDatasetProvider()
+    return LocalDatasetProvider()
+
+
+def _pipeline_sink(preferred: str | None = None) -> PipelineSink:
+    sink = (preferred or os.getenv("PIPELINE_SINK", "local")).lower()
+    if sink == "rt":
+        return RTPipelineSink()
+    return LocalPipelineSink()
 
 
 def get_home_dir() -> str:
@@ -36,49 +56,6 @@ async def check_namespace(namespace: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to check/create namespace: {str(e)}")
 
-def validate_json_content(content: bytes) -> None:
-    """Validate that content can be parsed as JSON"""
-    try:
-        json.loads(content)
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid JSON format: {str(e)}")
-
-def convert_csv_to_json(csv_content: bytes) -> bytes:
-    """Convert CSV content to JSON format"""
-    try:
-        # Decode bytes to string and create a StringIO object
-        csv_string = csv_content.decode('utf-8')
-        csv_file = StringIO(csv_string)
-        
-        # Read CSV and convert to list of dictionaries
-        reader = csv.DictReader(csv_file)
-        data = list(reader)
-        
-        if not data:
-            raise HTTPException(status_code=400, detail="CSV file is empty")
-            
-        # Convert back to JSON bytes
-        return json.dumps(data).encode('utf-8')
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid CSV encoding")
-    except csv.Error as e:
-        raise HTTPException(status_code=400, detail=f"Invalid CSV format: {str(e)}")
-
-def is_likely_csv(content: bytes, filename: str) -> bool:
-    """Check if content is likely to be CSV based on content and filename"""
-    # Check filename extension
-    if filename.lower().endswith('.csv'):
-        return True
-        
-    # If no clear extension, try to detect CSV content
-    try:
-        # Take first line and check if it looks like CSV
-        first_line = content.split(b'\n')[0].decode('utf-8')
-        # Check if line contains commas and no obvious JSON characters
-        return ',' in first_line and not any(c in first_line for c in '{}[]')
-    except:
-        return False
-
 @router.post("/upload-file")
 async def upload_file(
     file: UploadFile | None = File(None),
@@ -87,83 +64,71 @@ async def upload_file(
 ):
     """Upload a file to the namespace files directory, either from a direct upload or a URL"""
     try:
-        if not file and not url:
-            raise HTTPException(status_code=400, detail="Either file or url must be provided")
-            
-        upload_dir = get_namespace_dir(namespace) / "files"
-        upload_dir.mkdir(parents=True, exist_ok=True)
-        
-        if url:
-            # Get filename from URL or default to dataset.json
-            filename = url.split("/")[-1] or "dataset.json"
-            
-            file_path = upload_dir / filename.replace('.csv', '.json')
-            
-            # Handle URL download
-            async with httpx.AsyncClient() as client:
-                async with client.stream(
-                    'GET',
-                    url,
-                    follow_redirects=True,
-                ) as response:
-                    if response.status_code != 200:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Failed to download from URL: {response.status_code}"
-                        )
-                    
-                    # Save the file in chunks
-                    content_chunks = []
-                    async for chunk in response.aiter_bytes(chunk_size=8192):
-                        if chunk:  # filter out keep-alive new chunks
-                            content_chunks.append(chunk)
-                    
-                    # Combine chunks
-                    content = b''.join(content_chunks)
-                    
-                    # Check if content is CSV and convert if needed
-                    if is_likely_csv(content, filename):
-                        try:
-                            content = convert_csv_to_json(content)
-                        except HTTPException as e:
-                            raise HTTPException(
-                                status_code=400,
-                                detail=f"Failed to convert CSV to JSON: {str(e.detail)}"
-                            )
-                    
-                    # Validate JSON content
-                    validate_json_content(content)
-                    
-                    # Write to file
-                    with file_path.open("wb") as f:
-                        f.write(content)
-        else:
-            # Handle direct file upload
-            file_content = await file.read()
-            
-            # Check if content is CSV and convert if needed
-            if file.filename.lower().endswith('.csv'):
-                try:
-                    file_content = convert_csv_to_json(file_content)
-                except HTTPException as e:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Failed to convert CSV to JSON: {str(e.detail)}"
-                    )
-            
-            # Validate JSON content
-            validate_json_content(file_content)
-            
-            # Always save as .json
-            file_path = upload_dir / file.filename.replace('.csv', '.json')
-            with file_path.open("wb") as f:
-                f.write(file_content)
-            
-        return {"path": str(file_path)}
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
+        provider = _dataset_provider()
+        result = await provider.save_upload(namespace=namespace, file=file, url=url)
+        return {"path": result.path, "metadata": result.metadata}
+    except HTTPException:
+        raise
+    except Exception as e:  # pragma: no cover - defensive guard
+        raise HTTPException(
+            status_code=500, detail=f"Failed to upload file: {str(e)}"
+        ) from e
+
+
+def _preview_dataset(result: DatasetLoadResult) -> list[dict] | dict | None:
+    """Return a small preview of the dataset for the UI without loading the full file."""
+    try:
+        raw = result.content
+        if raw is None:
+            raw = Path(result.path).read_bytes()
+        snippet = raw[:200000]
+        try:
+            return json.loads(snippet.decode("utf-8"))
+        except Exception:
+            lines = snippet.decode("utf-8").splitlines()
+            preview_lines = [line for line in lines if line.strip()][:50]
+            return [json.loads(line) for line in preview_lines]
+    except Exception:
+        return None
+
+
+@router.get("/dataset")
+async def load_dataset(
+    dataset_url: str | None = None,
+    source_version_id: str | None = None,
+    project_id: str | None = None,
+    subset: str | None = None,
+    env: str | None = None,
+    namespace: str = "default",
+):
+    """Load a dataset either via URL or RT SourceVersion and materialize locally."""
+    try:
+        provider = _dataset_provider()
+        result = await provider.load_dataset(
+            namespace=namespace,
+            dataset_url=dataset_url,
+            source_version_id=source_version_id,
+            project_id=project_id,
+            subset=subset,
+            env=env,
+        )
+
+        preview = _preview_dataset(result)
+        response = {
+            "path": result.path,
+            "metadata": result.metadata,
+            "dataset_url": dataset_url,
+            "source_version_id": source_version_id,
+            "content_type": result.content_type,
+            "preview": preview,
+        }
+        return JSONResponse(response)
+    except HTTPException:
+        raise
+    except Exception as e:  # pragma: no cover - defensive guard
+        raise HTTPException(
+            status_code=500, detail=f"Failed to load dataset: {str(e)}"
+        ) from e
 
 @router.post("/save-documents")
 async def save_documents(files: list[UploadFile] = File(...), namespace: str = Form(...)):
@@ -194,39 +159,92 @@ async def save_documents(files: list[UploadFile] = File(...), namespace: str = F
 async def write_pipeline_config(request: PipelineConfigRequest):
     """Write pipeline configuration YAML file"""
     try:
-        home_dir = get_home_dir()
-        pipeline_dir = Path(home_dir) / ".docetl" / request.namespace / "pipelines"
-        config_dir = pipeline_dir / "configs"
-        name_dir = pipeline_dir / request.name / "intermediates"
-        
-        config_dir.mkdir(parents=True, exist_ok=True)
-        name_dir.mkdir(parents=True, exist_ok=True)
-        
-        file_path = config_dir / f"{request.name}.yaml"
-        with file_path.open("w") as f:
-            f.write(request.config)
-            
-        return {
-            "filePath": str(file_path),
-            "inputPath": request.input_path,
-            "outputPath": request.output_path
+        sink = _pipeline_sink(getattr(request, "sink", None))
+        metadata = (getattr(request, "metadata", None) or {}) | {
+            "input_path": request.input_path,
+            "output_path": request.output_path,
+            "pipeline_id": getattr(request, "pipeline_id", None),
+            "version": getattr(request, "version", None),
+            "owner": getattr(request, "owner", None),
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to write pipeline configuration: {str(e)}")
+
+        result = await sink.save(
+            namespace=request.namespace,
+            name=request.name,
+            yaml_str=request.config,
+            metadata=metadata,
+        )
+
+        return {
+            "filePath": result.path,
+            "inputPath": result.input_path or request.input_path,
+            "outputPath": result.output_path or request.output_path,
+            "uri": result.uri,
+            "manifest": result.manifest,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:  # pragma: no cover - defensive
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to write pipeline configuration: {str(e)}",
+        ) from e
+
+
+@router.post("/pipeline")
+async def save_pipeline(request: PipelineConfigRequest):
+    """Persist pipeline YAML using the configured sink (local or RT)."""
+    try:
+        sink = _pipeline_sink(getattr(request, "sink", None))
+        metadata = (getattr(request, "metadata", None) or {}) | {
+            "input_path": request.input_path,
+            "output_path": request.output_path,
+            "pipeline_id": getattr(request, "pipeline_id", None),
+            "version": getattr(request, "version", None),
+            "owner": getattr(request, "owner", None),
+        }
+
+        result = await sink.save(
+            namespace=request.namespace,
+            name=request.name,
+            yaml_str=request.config,
+            metadata=metadata,
+        )
+
+        return {
+            "filePath": result.path,
+            "inputPath": result.input_path or request.input_path,
+            "outputPath": result.output_path or request.output_path,
+            "uri": result.uri,
+            "manifest": result.manifest,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:  # pragma: no cover - defensive
+        raise HTTPException(
+            status_code=500, detail=f"Failed to save pipeline: {str(e)}"
+        ) from e
 
 @router.get("/read-file")
 async def read_file(path: str):
     """Read file contents"""
     try:
-        if path.startswith(("http://", "https://")):
-            # For HTTP URLs, we'll need to implement request handling
-            raise HTTPException(status_code=400, detail="HTTP URLs not supported in this endpoint")
-            
-        file_path = Path(path)
+        dataset: DatasetLoadResult | None = None
+        if path.startswith(("http://", "https://", "gs://")):
+            provider = _dataset_provider()
+            dataset = await provider.load_dataset(
+                namespace="default", dataset_url=path
+            )
+            file_path = Path(dataset.path)
+        else:
+            file_path = Path(path)
+
         if not file_path.exists():
             raise HTTPException(status_code=404, detail="File not found")
             
-        return FileResponse(path)
+        return FileResponse(str(file_path))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read file: {str(e)}")
 
@@ -234,7 +252,14 @@ async def read_file(path: str):
 async def read_file_page(path: str, page: int = 0, chunk_size: int = 500000):
     """Read file contents by page"""
     try:
-        file_path = Path(path)
+        if path.startswith(("http://", "https://", "gs://")):
+            dataset = await _dataset_provider().load_dataset(
+                namespace="default", dataset_url=path
+            )
+            file_path = Path(dataset.path)
+        else:
+            file_path = Path(path)
+
         if not file_path.exists():
             raise HTTPException(status_code=404, detail="File not found")
             

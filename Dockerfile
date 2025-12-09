@@ -1,5 +1,5 @@
 # Build stage for Python dependencies
-FROM python:3.11-slim AS python-builder
+FROM cahoover/research-tool-base AS python-builder
 
 # Install curl and uv for dependency management
 RUN apt-get update && apt-get install -y curl ca-certificates && rm -rf /var/lib/apt/lists/* && \
@@ -8,11 +8,11 @@ ENV PATH="/root/.local/bin:$PATH"
 ENV DOCETL_HOME_DIR="/docetl-data"
 
 WORKDIR /app
-
-COPY pyproject.toml ./
-COPY docetl/ ./docetl/
-COPY server/ ./server/
-COPY tests/ ./tests/
+COPY services/service_template/utils ./utils
+COPY services/ui_wrangler/pyproject.toml ./
+COPY services/ui_wrangler/docetl/ ./docetl/
+COPY services/ui_wrangler/server/ ./server/
+# COPY services/ui_wrangler/tests/ ./tests/
 RUN touch README.md
 
 # Create venv and sync only runtime + extras (omit dev deps)
@@ -27,9 +27,9 @@ WORKDIR /app/website
 # Update DOCETL_HOME_DIR to match final location
 ENV DOCETL_HOME_DIR="/docetl-data"
 
-COPY website/package*.json ./
+COPY services/ui_wrangler/website/package*.json ./
 RUN npm install
-COPY website/ ./
+COPY services/ui_wrangler/website/ ./
 RUN npm run build
 
 # Final runtime stage
@@ -54,11 +54,12 @@ ENV VIRTUAL_ENV=/app/.venv \
 
 COPY --from=python-builder /app/.venv ${VIRTUAL_ENV}
 
-# Copy Python application files
-COPY docetl/ ./docetl/
-COPY server/ ./server/
-COPY tests/ ./tests/
-COPY pyproject.toml ./
+# Copy Python application artifacts from builder to ensure paths exist
+COPY --from=python-builder /app/utils ./utils
+COPY --from=python-builder /app/docetl ./docetl
+COPY --from=python-builder /app/server ./server
+COPY --from=python-builder /app/pyproject.toml ./pyproject.toml
+
 COPY .env ./
 
 # Copy Node.js dependencies and application files

@@ -240,6 +240,7 @@ const PipelineGUI: React.FC = () => {
     apiKeys,
     extraPipelineSettings,
     setExtraPipelineSettings,
+    setRtContext,
   } = usePipelineContext();
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const { toast } = useToast();
@@ -631,7 +632,16 @@ const PipelineGUI: React.FC = () => {
           throw new Error(await response.text());
         }
 
-        const { filePath, inputPath, outputPath } = await response.json();
+        const { filePath, inputPath, outputPath, uri, manifest } =
+          await response.json();
+
+        if (uri || manifest) {
+          setRtContext((prev) => ({
+            ...(prev || {}),
+            pipelineUri: uri || prev?.pipelineUri,
+            manifest: manifest || prev?.manifest || null,
+          }));
+        }
 
         setOutput({
           operationId: lastOperation.id,
@@ -673,6 +683,7 @@ const PipelineGUI: React.FC = () => {
       namespace,
       extraPipelineSettings,
       cost,
+      setRtContext,
     ]
   );
 
@@ -730,7 +741,15 @@ const PipelineGUI: React.FC = () => {
         throw new Error(await response.text());
       }
 
-      const { filePath } = await response.json();
+      const { filePath, uri, manifest } = await response.json();
+
+      if (uri || manifest) {
+        setRtContext((prev) => ({
+          ...(prev || {}),
+          pipelineUri: uri || prev?.pipelineUri,
+          manifest: manifest || prev?.manifest || null,
+        }));
+      }
 
       await connect();
 

@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { useSearchParams } from "next/navigation";
 import React, { useEffect, useState, useRef, Suspense } from "react";
 import {
   Scroll,
@@ -9,6 +10,7 @@ import {
   Monitor,
   AlertCircle,
   Loader2,
+  Globe,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -291,7 +293,9 @@ const CodeEditorPipelineApp: React.FC = () => {
   const [showNLPipelineDialog, setShowNLPipelineDialog] = useState(false);
   const [hasAutoOpenedNLPipelineDialog, setHasAutoOpenedNLPipelineDialog] =
     useState(false);
+  const hasLoadedFromParams = useRef(false);
   const { theme, setTheme } = useTheme();
+  const searchParams = useSearchParams();
 
   const {
     currentFile,
@@ -313,6 +317,8 @@ const CodeEditorPipelineApp: React.FC = () => {
     setSystemPrompt,
     setOutput,
     defaultModel,
+    rtContext,
+    setRtContext,
   } = usePipelineContext();
   const hasWorkspaceContent =
     (operations?.length ?? 0) > 0 ||
@@ -359,6 +365,106 @@ const CodeEditorPipelineApp: React.FC = () => {
     isMounted,
     namespace,
     setShowNLPipelineDialog,
+  ]);
+
+  useEffect(() => {
+    const datasetUrl =
+      searchParams.get("dataset_url") ||
+      searchParams.get("datasetUrl") ||
+      searchParams.get("dataset");
+    const sourceVersionId =
+      searchParams.get("source_version_id") ||
+      searchParams.get("sourceVersionId");
+    if (hasLoadedFromParams.current || (!datasetUrl && !sourceVersionId)) {
+      return;
+    }
+
+    const targetNamespace =
+      namespace || searchParams.get("project_id") || "rt-default";
+    if (!namespace && targetNamespace) {
+      setNamespace(targetNamespace);
+    }
+
+    const pipelineParam = searchParams.get("pipeline");
+    if (pipelineParam) {
+      setPipelineName(pipelineParam);
+    }
+
+    const loadFromParams = async () => {
+      try {
+        const params = new URLSearchParams();
+        params.set("namespace", targetNamespace);
+        if (datasetUrl) params.set("dataset_url", datasetUrl);
+        if (sourceVersionId) params.set("source_version_id", sourceVersionId);
+        const projectId = searchParams.get("project_id");
+        if (projectId) params.set("project_id", projectId);
+        const env = searchParams.get("env");
+        if (env) params.set("env", env);
+
+        const response = await fetch(`/api/dataset?${params.toString()}`);
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        const data = await response.json();
+        const name =
+          data.metadata?.filename ||
+          sourceVersionId ||
+          (datasetUrl ? datasetUrl.split("/").pop() : "") ||
+          "dataset.json";
+        const newFile: File = {
+          name,
+          path: data.path,
+          type: "json",
+          parentFolder: "root",
+        };
+        setFiles((prev) => {
+          const exists = prev.find((f) => f.path === newFile.path);
+          if (exists) {
+            return prev;
+          }
+          return [...prev, newFile];
+        });
+        setCurrentFile(newFile);
+        setShowDatasetView(true);
+        setShowFileExplorer(true);
+        setRtContext({
+          datasetUrl,
+          sourceVersionId,
+          datasetPath: data.path,
+          manifest: data.metadata || null,
+        });
+        hasLoadedFromParams.current = true;
+        toast({
+          title: "Loaded RT dataset",
+          description: sourceVersionId || datasetUrl || name,
+          duration: 3000,
+        });
+      } catch (error) {
+        console.error("Failed to load dataset from query params", error);
+        toast({
+          title: "Failed to load dataset",
+          description:
+            error instanceof Error
+              ? error.message
+              : "Could not preload dataset",
+          variant: "destructive",
+          duration: 4000,
+        });
+      }
+    };
+
+    loadFromParams();
+  }, [
+    namespace,
+    searchParams,
+    setNamespace,
+    setPipelineName,
+    setFiles,
+    setCurrentFile,
+    setRtContext,
+    toast,
+    setShowDatasetView,
+    setShowFileExplorer,
   ]);
 
   if (isLoading) {
@@ -717,7 +823,7 @@ const CodeEditorPipelineApp: React.FC = () => {
           </div>
           <div className="flex items-center gap-2">
             <Scroll className="text-primary" size={20} />
-            <h1 className="text-lg font-bold text-primary">DocWrangler</h1>
+            <h1 className="text-lg font-bold text-primary">Research Tool</h1>
             {isMounted && (
               <span className="text-sm text-gray-600">({namespace})</span>
             )}
@@ -729,6 +835,49 @@ const CodeEditorPipelineApp: React.FC = () => {
                 <span className="font-medium">${cost.toFixed(2)}</span>
               </div>
             )}
+            {rtContext &&
+              (rtContext.datasetUrl ||
+                rtContext.sourceVersionId ||
+                rtContext.pipelineUri) && (
+                <TooltipProvider delayDuration={0}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <div className="flex items-center gap-2 rounded-full border px-3 py-1 bg-emerald-50 text-emerald-900 border-emerald-200 cursor-default">
+                        <Globe className="h-4 w-4 text-emerald-700" />
+                        <div className="flex flex-col leading-tight">
+                          <span className="text-[11px] font-semibold uppercase tracking-wide">
+                            Synced with RT
+                          </span>
+                          <span className="text-xs text-emerald-800 truncate max-w-[220px]">
+                            {rtContext.sourceVersionId ||
+                              rtContext.datasetUrl ||
+                              rtContext.pipelineUri}
+                          </span>
+                        </div>
+                      </div>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <div className="text-sm space-y-1 max-w-xs">
+                        {rtContext.sourceVersionId && (
+                          <p className="font-medium">
+                            SourceVersion: {rtContext.sourceVersionId}
+                          </p>
+                        )}
+                        {rtContext.datasetUrl && (
+                          <p className="text-muted-foreground">
+                            Dataset URL: {rtContext.datasetUrl}
+                          </p>
+                        )}
+                        {rtContext.pipelineUri && (
+                          <p className="text-muted-foreground">
+                            Pipeline URI: {rtContext.pipelineUri}
+                          </p>
+                        )}
+                      </div>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
             <div className={panelControlsStyles}>
               <TooltipProvider>
                 <Tooltip>
@@ -963,7 +1112,9 @@ const WrappedCodeEditorPipelineApp: React.FC = () => {
     <ThemeProvider>
       <PipelineProvider>
         <WebSocketWrapper>
-          <CodeEditorPipelineApp />
+          <Suspense fallback={<LoadingScreen />}>
+            <CodeEditorPipelineApp />
+          </Suspense>
         </WebSocketWrapper>
       </PipelineProvider>
     </ThemeProvider>

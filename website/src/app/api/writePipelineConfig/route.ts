@@ -20,11 +20,16 @@ export async function POST(request: Request) {
       optimize = false,
       clear_intermediate = false,
       system_prompt,
-      namespace,
-      apiKeys,
-      optimizerModel,
-      extraPipelineSettings,
-    } = await request.json();
+    namespace,
+    apiKeys,
+    optimizerModel,
+    extraPipelineSettings,
+    sink,
+    pipelineId,
+    pipelineVersion,
+    pipelineOwner,
+    metadata,
+  } = await request.json();
 
     if (!name) {
       return NextResponse.json(
@@ -74,6 +79,11 @@ export async function POST(request: Request) {
         config: yamlString,
         input_path: inputPath,
         output_path: outputPath,
+        sink,
+        pipeline_id: pipelineId,
+        version: pipelineVersion,
+        owner: pipelineOwner,
+        metadata,
       }),
     });
 
@@ -87,6 +97,8 @@ export async function POST(request: Request) {
       filePath: result.filePath,
       inputPath: result.inputPath,
       outputPath: result.outputPath,
+      uri: result.uri,
+      manifest: result.manifest,
     });
   } catch (error) {
     console.error("Pipeline configuration error:", error);

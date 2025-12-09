@@ -1,4 +1,5 @@
 from typing import Any
+import os
 import uuid
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from docetl.runner import DSLRunner
@@ -9,6 +10,7 @@ import logging
 from datetime import datetime, timedelta
 from enum import Enum
 from server.app.models import OptimizeResult, TaskStatus, OptimizeRequest, PipelineRequest
+from server.app.providers import LocalDatasetProvider, RTDatasetProvider
 
 # Setup logging
 FORMAT = "%(message)s"
@@ -24,6 +26,41 @@ asyncio_tasks: dict[str, Task] = {}
 
 # Configuration
 COMPLETED_TASK_TTL = timedelta(hours=1)
+
+
+def _dataset_provider():
+    provider = os.getenv("DATA_PROVIDER", "local").lower()
+    if provider == "rt":
+        return RTDatasetProvider()
+    return LocalDatasetProvider()
+
+
+async def _apply_dataset_override(
+    runner: DSLRunner, request_data: dict[str, Any]
+) -> dict[str, Any]:
+    dataset_url = request_data.get("dataset_url")
+    source_version_id = request_data.get("source_version_id")
+    if not dataset_url and not source_version_id:
+        return {}
+
+    datasets_cfg = runner.config.get("datasets") or {}
+    if not datasets_cfg:
+        return {}
+
+    dataset_name = next(iter(datasets_cfg.keys()))
+    provider = _dataset_provider()
+    result = await provider.load_dataset(
+        namespace=request_data.get("namespace") or "default",
+        dataset_url=dataset_url,
+        source_version_id=source_version_id,
+        project_id=request_data.get("project_id"),
+        subset=request_data.get("subset"),
+        env=request_data.get("dataset_env"),
+    )
+    datasets_cfg[dataset_name]["path"] = result.path
+    datasets_cfg[dataset_name]["source"] = "local"
+    runner.config["datasets"] = datasets_cfg
+    return {"dataset": {"path": result.path, "metadata": result.metadata}}
 
 async def cleanup_old_tasks():
     """Background task to clean up completed tasks"""
@@ -155,17 +192,27 @@ async def cancel_optimize_task(task_id: str):
 
 # Keep the original run_pipeline endpoint
 @router.post("/run_pipeline")
-def run_pipeline(request: PipelineRequest) -> dict[str, Any]:
+async def run_pipeline(request: PipelineRequest) -> dict[str, Any]:
+    runner: DSLRunner | None = None
     try:
         runner = DSLRunner.from_yaml(request.yaml_config)
-        cost = runner.load_run_save()
-        runner.reset_env()
-        return {"cost": cost, "message": "Pipeline executed successfully"}
+        dataset_ctx = await _apply_dataset_override(
+            runner, request.model_dump(mode="python")
+        )
+        cost = await asyncio.to_thread(runner.load_run_save)
+        response = {"cost": cost, "message": "Pipeline executed successfully"}
+        if dataset_ctx:
+            response.update(dataset_ctx)
+        return response
     except Exception as e:
         import traceback
+
         error_traceback = traceback.format_exc()
         print(f"Error occurred:\n{e}\n{error_traceback}")
         raise HTTPException(status_code=500, detail=str(e) + "\n" + error_traceback)
+    finally:
+        if runner is not None:
+            runner.reset_env()
 
 @router.websocket("/ws/run_pipeline/{client_id}")
 async def websocket_run_pipeline(websocket: WebSocket, client_id: str):
@@ -174,6 +221,7 @@ async def websocket_run_pipeline(websocket: WebSocket, client_id: str):
     try:
         config = await websocket.receive_json()
         runner = DSLRunner.from_yaml(config["yaml_config"])
+        await _apply_dataset_override(runner, config)
 
         if config.get("clear_intermediate", False):
             runner.clear_intermediate()

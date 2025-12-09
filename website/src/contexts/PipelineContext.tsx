@@ -42,6 +42,7 @@ interface PipelineState {
   namespace: string | null;
   apiKeys: APIKey[];
   extraPipelineSettings: Record<string, unknown> | null;
+  rtContext: RemoteContext | null;
 }
 
 interface PipelineContextType extends PipelineState {
@@ -83,6 +84,15 @@ interface PipelineContextType extends PipelineState {
   setExtraPipelineSettings: React.Dispatch<
     React.SetStateAction<Record<string, unknown> | null>
   >;
+  setRtContext: React.Dispatch<React.SetStateAction<RemoteContext | null>>;
+}
+
+interface RemoteContext {
+  datasetUrl?: string | null;
+  sourceVersionId?: string | null;
+  datasetPath?: string | null;
+  pipelineUri?: string | null;
+  manifest?: Record<string, unknown> | null;
 }
 
 const PipelineContext = createContext<PipelineContextType | undefined>(
@@ -327,6 +337,7 @@ export const PipelineProvider: React.FC<{ children: React.ReactNode }> = ({
       localStorageKeys.EXTRA_PIPELINE_SETTINGS_KEY,
       null
     ),
+    rtContext: null,
   }));
 
   const [unsavedChanges, setUnsavedChanges] = useState(false);
@@ -437,6 +448,7 @@ export const PipelineProvider: React.FC<{ children: React.ReactNode }> = ({
       namespace: null,
       apiKeys: stateRef.current.apiKeys,
       extraPipelineSettings: null,
+      rtContext: null,
     });
     setUnsavedChanges(false);
   }, []);
@@ -464,7 +476,7 @@ export const PipelineProvider: React.FC<{ children: React.ReactNode }> = ({
             );
             return { ...prevState, [key]: newValue };
           } else {
-            if (key !== "apiKeys") {
+            if (key !== "apiKeys" && key !== "rtContext") {
               setUnsavedChanges(true);
             }
             return { ...prevState, [key]: newValue };
@@ -587,6 +599,10 @@ export const PipelineProvider: React.FC<{ children: React.ReactNode }> = ({
     ),
     setExtraPipelineSettings: useCallback(
       (value) => setStateAndUpdate("extraPipelineSettings", value),
+      [setStateAndUpdate]
+    ),
+    setRtContext: useCallback(
+      (value) => setStateAndUpdate("rtContext", value),
       [setStateAndUpdate]
     ),
   };

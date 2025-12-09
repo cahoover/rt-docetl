@@ -6,6 +6,12 @@ from enum import Enum
 
 class PipelineRequest(BaseModel):
     yaml_config: str
+    dataset_url: str | None = None
+    source_version_id: str | None = None
+    project_id: str | None = None
+    subset: str | None = None
+    namespace: str | None = None
+    dataset_env: str | None = None
 
 class PipelineConfigRequest(BaseModel):
     namespace: str
@@ -13,6 +19,11 @@ class PipelineConfigRequest(BaseModel):
     config: str
     input_path: str
     output_path: str
+    sink: str | None = None
+    metadata: dict[str, Any] | None = None
+    pipeline_id: str | None = None
+    version: str | None = None
+    owner: str | None = None
 
 class TaskStatus(str, Enum):
     PENDING = "pending"

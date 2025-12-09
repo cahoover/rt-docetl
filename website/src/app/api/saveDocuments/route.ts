@@ -1,10 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-
-const FASTAPI_URL = `${
-  process.env.NEXT_PUBLIC_BACKEND_HTTPS ? "https" : "http"
-}://${process.env.NEXT_PUBLIC_BACKEND_HOST}:${
-  process.env.NEXT_PUBLIC_BACKEND_PORT
-}`;
+import { getBackendUrl } from "@/lib/api-config";
 
 export async function POST(request: NextRequest) {
   try {
@@ -24,7 +19,7 @@ export async function POST(request: NextRequest) {
     backendFormData.append("namespace", namespace);
 
     // Send to FastAPI backend
-    const response = await fetch(`${FASTAPI_URL}/fs/save-documents`, {
+    const response = await fetch(`${getBackendUrl()}/fs/save-documents`, {
       method: "POST",
       body: backendFormData,
     });

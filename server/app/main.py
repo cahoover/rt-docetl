@@ -10,6 +10,7 @@ load_dotenv()
 host = os.getenv("BACKEND_HOST", "127.0.0.1")
 port = int(os.getenv("BACKEND_PORT", 8000))
 reload = os.getenv("BACKEND_RELOAD", "False").lower() == "true"
+dataset_url_param = os.getenv("DATASET_URL_PARAM", "dataset_url")
 
 # Set default allow_origins if BACKEND_ALLOW_ORIGINS is not provided
 allow_origins = os.getenv("BACKEND_ALLOW_ORIGINS", "http://localhost:3000").split(",")
@@ -38,6 +39,16 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+@app.get("/config")
+async def runtime_config():
+    """Expose runtime flags to the frontend."""
+    return {
+        "data_provider": os.getenv("DATA_PROVIDER", "local"),
+        "pipeline_sink": os.getenv("PIPELINE_SINK", "local"),
+        "dataset_url_param": dataset_url_param,
+        "rt_env": os.getenv("RT_STORAGE_ENV"),
+    }
 
 if __name__ == "__main__":
     import uvicorn

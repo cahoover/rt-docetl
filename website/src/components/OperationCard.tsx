@@ -736,6 +736,7 @@ export const OperationCard: React.FC<Props> = ({ index, id }) => {
     apiKeys,
     systemPrompt,
     extraPipelineSettings,
+    setRtContext,
   } = usePipelineContext();
   const { toast } = useToast();
 
@@ -840,7 +841,15 @@ export const OperationCard: React.FC<Props> = ({ index, id }) => {
         throw new Error(await response.text());
       }
 
-      const { filePath } = await response.json();
+      const { filePath, uri, manifest } = await response.json();
+
+      if (uri || manifest) {
+        setRtContext((prev) => ({
+          ...(prev || {}),
+          pipelineUri: uri || prev?.pipelineUri,
+          manifest: manifest || prev?.manifest || null,
+        }));
+      }
 
       // Ensure WebSocket is connected
       await connect();
@@ -876,6 +885,7 @@ export const OperationCard: React.FC<Props> = ({ index, id }) => {
     namespace,
     apiKeys,
     extraPipelineSettings,
+    setRtContext,
   ]);
 
   const onShowOutput = useCallback(async () => {
